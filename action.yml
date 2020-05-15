@@ -1,0 +1,28 @@
+# action.yml
+name: "Auto-PR Submodules Updates"
+description: "Automatically open (or update) a pull-request when it detects updates to individual submodule in a repository."
+inputs:
+  owner:
+    description: "Owner of the repository."
+    required: true
+  repo:
+    description: "Name of the repository."
+    required: true
+  github_token:
+    description: "Github token with access to the owner repository."
+    required: true
+  user:
+    description: "User pushing changes to the (forked) repository."
+    required: true
+  user_github_token:
+    description: "GitHub API token with write access to the (forked) repository."
+    required: true
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - ${{ inputs.owner }}
+    - ${{ inputs.repo }}
+    - ${{ inputs.github_token }}
+    - ${{ inputs.user}}
+    - ${{ inputs.user_github_token}}
