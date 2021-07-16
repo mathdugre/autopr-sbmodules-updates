@@ -1,53 +1,30 @@
 #!/usr/bin/env python3
 import argparse
 from contextlib import contextmanager
-import os
 import re
-from typing import List, Generator, NoReturn
 
+from github import Github
 import git
-import requests
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Create PR for updated submodules in repository"
     )
-
-    parser.add_argument("owner", type=str, help="Name of the repository owner.")
-    parser.add_argument("repo", type=str, help="Name of the repository.")
     parser.add_argument(
-        "github_token",
+        "token",
         type=str,
         help="Github token with access to the owner repository.",
     )
-    parser.add_argument("user", type=str, help="Name of the fork user.")
-    parser.add_argument(
-        "user_github_token", type=str, help="GitHub API token for of the fork user."
-    )
 
     return parser.parse_args()
-
-
-def create_pr(submodule, PROJECT_SLUG, GITHUB_TOKEN, head):
-    r = requests.post(
-        f"https://api.github.com/repos/{PROJECT_SLUG}/pulls?access_token={GITHUB_TOKEN}",
-        json={
-            "title": f"[UPDATE] submodule to most recent version. ({submodule.name})",
-            "body": "## Description"
-            + f"\nA new version of {submodule.name} exists."
-            + "This is an automatic update of the submodule.",
-            "head": head,
-            "base": "master",
-        },
-    )
 
 
 @contextmanager
 def change_branch(submodule):
 
     initial_branch = submodule.repo.active_branch.name
-    target_branch_name = f"update/{submodule.name}"
+    target_branch_name = f"submodule-update/{submodule.name}"
 
     if not any(
         [
@@ -58,44 +35,41 @@ def change_branch(submodule):
         submodule.repo.git.branch(target_branch_name)
 
     submodule.repo.git.checkout(target_branch_name)
-    yield submodule.repo.active_branch
+    yield submodule.repo.active_branch.name
     submodule.repo.git.checkout(initial_branch)
 
 
 if __name__ == "__main__":
     args = parse_args()
-    PROJECT_SLUG = f"{args.owner}/{args.repo}"
 
-    repo_path = os.path.join(os.getcwd(), args.repo)
-    git.Repo.clone_from(f"https://github.com/{PROJECT_SLUG}.git", repo_path)
+    repo = git.Repo()
 
-    repo = git.Repo(repo_path)
+    origin = repo.remote(name="origin")
+    repo_slug = origin.url.removeprefix("git@github.com:").removesuffix(".git")
+    origin.set_url(f"https://{args.token}@github.com/{repo_slug}.git")
+
+    gh_repo = Github(args.token).get_repo(repo_slug)
 
     with repo.config_writer("global") as config:
-        config.set_value("user", "name", args.user)
+        config.set_value("user", "name", "github-actions")
         config.set_value("user", "email", "github-action@users.noreply.github.com")
 
-    # Use GitHub token for authentication.
-    upstream = repo.create_remote(
-        "upstream",
-        f"https://{args.user}:{args.user_github_token}@github.com/{args.user}/{args.repo}.git",
-    )
-
     # Get current PRs HEAD in the repository.
-    pull_requests = requests.get(
-        f"https://api.github.com/repos/{PROJECT_SLUG}/pulls"
-    ).json()
-    pr_heads = [pr["head"]["label"] for pr in pull_requests]
+    pr_heads = [pr.head.label for pr in gh_repo.get_pulls(state="open")]
 
     for submodule in repo.submodules:
+        print("updating", submodule.name)
 
         with change_branch(submodule) as branch:
 
-            pr_exist = f"{args.user}:{branch}" in pr_heads
+            pr_exist = f"github-actions:{branch}" in pr_heads
             if pr_exist:
-                upstream.pull(branch)
+                origin.pull(branch)
 
             # Update submodule from remote.
+            repo.git.config(
+                f"submodule.{submodule.name}.branch", "main", file=".gitmodules"
+            )
             repo.git.submodule("sync", submodule.path)
             repo.git.submodule("update", "--remote", submodule.path)
 
@@ -103,12 +77,28 @@ if __name__ == "__main__":
 
                 repo.git.add(submodule.path)
                 repo.git.commit(message="[UPDATE] submodule to most recent version.")
-                upstream.push(branch)
+                print(repo.git.log())
+                print(repo.git.status())
+                repo.git.push("origin", branch)
+                print("pushed", submodule.name, "to", branch)
 
                 if not pr_exist:
-                    create_pr(
-                        submodule,
-                        PROJECT_SLUG,
-                        args.github_token,
-                        head=f"{args.user}:{branch}",
+                    print(
+                        "TRYING to PR",
+                        submodule.name,
+                        "from",
+                        branch,
+                        "to",
+                        gh_repo.default_branch,
                     )
+                    gh_repo.create_pull(
+                        title=f"[UPDATE] submodule to most recent version. ({submodule.name})",
+                        body=f"""## Description
+A new version of {submodule.name} exists.
+This is an automatic update of the submodule.""",
+                        head=branch,
+                        base=gh_repo.default_branch,
+                    )
+                print(
+                    "PR", submodule.name, "from", branch, "to", gh_repo.default_branch
+                )
