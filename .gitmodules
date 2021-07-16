@@ -1,0 +1,3 @@
+[submodule "test-repo-submodule"]
+	path = test-repo-submodule
+	url = https://github.com/mathdugre/test-repo-submodule.git
