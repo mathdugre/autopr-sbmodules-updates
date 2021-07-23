@@ -45,10 +45,15 @@ if __name__ == "__main__":
     repo = git.Repo()
 
     origin = repo.remote(name="origin")
-    repo_slug = origin.url.removeprefix("git@github.com:").removesuffix(".git")
-    origin.set_url(f"https://{args.token}@github.com/{repo_slug}.git")
+    repo_slug = (
+        lambda r: r.url.removesuffix(".git")
+        .removeprefix("git@github.com:")
+        .removeprefix("https://github.com/")
+    )
+    origin.set_url(f"https://{args.token}@github.com/{repo_slug(origin)}.git")
 
-    gh_repo = Github(args.token).get_repo(repo_slug)
+    gh = Github(args.token)
+    gh_repo = gh.get_repo(repo_slug(origin))
 
     with repo.config_writer("global") as config:
         config.set_value("user", "name", "github-actions")
@@ -62,35 +67,26 @@ if __name__ == "__main__":
 
         with change_branch(submodule) as branch:
 
-            pr_exist = f"github-actions:{branch}" in pr_heads
+            pr_exist = f"{gh.get_user().login}:{branch}" in pr_heads
             if pr_exist:
-                origin.pull(branch)
+                repo.git.pull("origin", branch)
 
             # Update submodule from remote.
+            submodule_gh_repo = gh.get_repo(repo_slug(submodule))
             repo.git.config(
-                f"submodule.{submodule.name}.branch", "main", file=".gitmodules"
+                f"submodule.{submodule.name}.branch",
+                submodule_gh_repo.default_branch,
+                file=".gitmodules",
             )
             repo.git.submodule("sync", submodule.path)
             repo.git.submodule("update", "--remote", submodule.path)
 
-            if repo.is_dirty():
-
+            if repo.is_dirty(path=submodule.path):
                 repo.git.add(submodule.path)
                 repo.git.commit(message="[UPDATE] submodule to most recent version.")
-                print(repo.git.log())
-                print(repo.git.status())
                 repo.git.push("origin", branch)
-                print("pushed", submodule.name, "to", branch)
 
                 if not pr_exist:
-                    print(
-                        "TRYING to PR",
-                        submodule.name,
-                        "from",
-                        branch,
-                        "to",
-                        gh_repo.default_branch,
-                    )
                     gh_repo.create_pull(
                         title=f"[UPDATE] submodule to most recent version. ({submodule.name})",
                         body=f"""## Description
@@ -99,6 +95,3 @@ This is an automatic update of the submodule.""",
                         head=branch,
                         base=gh_repo.default_branch,
                     )
-                print(
-                    "PR", submodule.name, "from", branch, "to", gh_repo.default_branch
-                )
